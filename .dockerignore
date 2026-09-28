@@ -1,0 +1,9 @@
+.git
+docs
+*.log
+.env
+.dashboard-pw
+.tunnel-key
+.tunnel-url
+tunnel
+wrangler.toml

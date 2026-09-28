@@ -51,6 +51,63 @@ dipakai karena di jaringan VM asal WebSocket, QUIC/UDP, dan koneksi `cloudflared
 ke edge semuanya gagal — lihat [arsip kegagalan](docs/arsip-tunnel-gagal.md).
 Di VM/jaringan normal, `cloudflared` biasa kemungkinan justru lebih sederhana.
 
+## Deploy ke Koyeb (tanpa VM sendiri)
+
+Kalau tidak punya VM, seluruh stack bisa jalan 24/7 di [Koyeb](https://www.koyeb.com)
+sebagai **satu container**: 9Router + Hermes gateway di dalamnya, HTTPS-nya
+disediakan Koyeb (jadi tunnel Cloudflare di atas tidak diperlukan).
+
+```
+Browser  ──HTTPS──▶  <app>-<org>.koyeb.app
+                          │  (Koyeb terminasi TLS, forward ke $PORT)
+                          ▼
+                     container Koyeb
+                       ├─ 9router  -p $PORT -H 0.0.0.0   (dashboard + /v1)
+                       └─ hermes gateway run  ──polling──▶ Telegram
+                              └─ OPENAI_BASE_URL=http://127.0.0.1:$PORT/v1
+```
+
+Cara deploy:
+
+```bash
+export KOYEB_API_TOKEN='<token dari app.koyeb.com/settings/api>'
+export TELEGRAM_BOT_TOKEN='<token @BotFather>'
+export TELEGRAM_ALLOWED_USERS='123456789'      # numeric ID kamu (default-deny)
+export NINEROUTER_PASSWORD='<password dashboard>'
+export KOYEB_VOLUME=hermuse-data               # opsional tapi disarankan
+bash scripts/deploy-koyeb.sh
+```
+
+Script-nya idempotent: sekali jalan membuat app + service, jalan berikutnya
+meng-update dan redeploy service yang sama. Koyeb yang mem-build `Dockerfile`
+di repo ini langsung dari GitHub, jadi tiap push ke `main` = redeploy otomatis.
+
+Environment variable yang dikenali container:
+
+| Variable | Default | Keterangan |
+|---|---|---|
+| `PORT` | `8000` (diisi Koyeb) | Port publik; 9Router bind ke sini. |
+| `NINEROUTER_PASSWORD` | — | **Wajib.** Password dashboard 9Router (publik di Koyeb). |
+| `TELEGRAM_BOT_TOKEN` | — | Tanpa ini gateway tidak dijalankan. |
+| `TELEGRAM_ALLOWED_USERS` | — | Allowlist numeric ID; wajib, default-deny. |
+| `HERMUSE_MODEL` / `HERMUSE_MODEL_PROVIDER` | — / `openai-api` | Set `model.default` & `model.provider` Hermes saat boot. |
+| `HERMUSE_ROUTER_ENABLED` | `1` | `0` = tanpa 9Router (Hermes langsung ke provider). |
+| `HERMUSE_GATEWAY_ENABLED` | `1` | `0` = hanya 9Router. |
+| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `NOUS_API_KEY`, `BRAVE_API_KEY` | — | Diteruskan ke `.env` Hermes kalau di-set. |
+
+Catatan penting:
+
+- **State Hermes ada di `/opt/data`** (sesi, memori, skills, `.env`). Filesystem
+  container ephemeral — tanpa volume, semuanya hilang tiap redeploy. Set
+  `KOYEB_VOLUME` supaya script membuat & memasang volume persisten ke sana.
+- **Dashboard 9Router publik** di URL Koyeb. Selain `NINEROUTER_PASSWORD`, kamu
+  bisa menambah basic auth di level Koyeb: `koyeb service update hermuse/hermuse
+  --auth 'admin:{{secret.hermuse-9router-password}}'`.
+- Secret (`TELEGRAM_BOT_TOKEN`, `NINEROUTER_PASSWORD`) disimpan sebagai **Koyeb
+  secret**, bukan plaintext di definisi service.
+- Test lokal sebelum deploy:
+  `docker build -t hermuse . && docker run --rm -p 8000:8000 -e PORT=8000 -e NINEROUTER_PASSWORD=... hermuse`
+
 ## Layout file
 
 | File | Peran |
@@ -67,6 +124,9 @@ Di VM/jaringan normal, `cloudflared` biasa kemungkinan justru lebih sederhana.
 | `scripts/install.sh` | Install dari nol: dependensi, Node.js LTS, Hermes, 9Router. |
 | `scripts/setup-tunnel.sh` | Setup tunnel: generate key → buat D1 → deploy Pages → set secret. |
 | `docs/arsip-tunnel-gagal.md` | Arsip: `cloudflared` & Tailscale yang gagal di jaringan VM asal. |
+| `Dockerfile` | Image Koyeb: base image resmi Hermes + 9Router. |
+| `docker/hermuse-start.sh` | Entrypoint container: tulis `.env`, jalankan 9Router di `$PORT` + gateway Telegram. |
+| `scripts/deploy-koyeb.sh` | Deploy/update app + service Koyeb (secret, volume, health check). |
 
 ## Urutan boot yang benar
 
